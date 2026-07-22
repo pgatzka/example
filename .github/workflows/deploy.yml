@@ -48,20 +48,6 @@ jobs:
       group: deploy-${{ inputs.environment }}
       cancel-in-progress: false
 
-    env:
-      IMAGE: ${{ vars.IMAGE_NAME || format('ghcr.io/{0}', github.repository) }}
-      TAG: ${{ inputs.image_tag }}
-      TRIGGER_SHA: ${{ github.sha }}
-
-      SERVICE: ${{ vars.COMPOSE_SERVICE }}
-      COMPOSE_PROJECT_NAME: ${{ vars.COMPOSE_STACK_NAME }}
-      COMPOSE_FILE: ${{ vars.COMPOSE_FILE }}
-
-      HOST_PORT: ${{ vars.HOST_PORT }}
-      ACTUATOR_PATH: ${{ vars.ACTUATOR_PATH }}
-      HEALTH_TIMEOUT: ${{ vars.HEALTH_TIMEOUT }}
-      HEALTH_INTERVAL: ${{ vars.HEALTH_INTERVAL }}
-
     steps:
       # Shallow checkout just to get a working git repo; we fetch the exact
       # revisions we need on demand below.
@@ -72,100 +58,15 @@ jobs:
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Deploy the image together with its matching compose files
-        run: |
-          set -euo pipefail
-
-          # --- helpers ---------------------------------------------------------
-
-          # Git SHA the image was built from (OCI standard label). Empty if absent.
-          image_revision() {
-            docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$1" 2>/dev/null || true
-          }
-
-          # Check out the compose files at a specific commit so config matches the image.
-          checkout_revision() {
-            local sha="$1"
-            if [ -z "$sha" ]; then
-              echo "::warning::No source revision known; using the compose files from the triggering ref."
-              return 0
-            fi
-            echo "Checking out compose files at revision $sha"
-            git fetch --depth 1 origin "$sha"
-            git checkout --quiet --force FETCH_HEAD
-          }
-
-          deploy() {  # $1 = image ref, $2 = revision for compose files
-            checkout_revision "$2"
-            APP_IMAGE="$1" docker compose up -d --remove-orphans
-          }
-
-          wait_healthy() {
-            local url="http://localhost:${HOST_PORT}${ACTUATOR_PATH}"
-            local deadline=$(( $(date +%s) + HEALTH_TIMEOUT ))
-            echo "Waiting for health at $url (timeout ${HEALTH_TIMEOUT}s)..."
-            while [ "$(date +%s)" -lt "$deadline" ]; do
-              if curl -fsS "$url" >/dev/null 2>&1; then
-                echo "Actuator reports UP."; return 0
-              fi
-              sleep "$HEALTH_INTERVAL"
-            done
-            return 1
-          }
-
-          # --- resolve the NEW version ----------------------------------------
-          NEW_REF="${IMAGE}:${TAG}"
-          docker pull "$NEW_REF"
-
-          NEW_SHA="$(image_revision "$NEW_REF")"
-          if [ -z "$NEW_SHA" ]; then
-            # Fallback: a literal sha-<hex> tag, else the triggering commit.
-            case "$TAG" in
-              sha-*) NEW_SHA="${TAG#sha-}" ;;
-              *)     NEW_SHA="$TRIGGER_SHA" ;;
-            esac
-          fi
-          echo "New image $NEW_REF was built from revision: ${NEW_SHA:-<unknown>}"
-
-          # --- capture the PREVIOUS version (independent of any compose file) --
-          PREV_CID=$(docker ps -q \
-            --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
-            --filter "label=com.docker.compose.service=${SERVICE}" | head -n1)
-          PREV_IMAGE=""; PREV_SHA=""
-          if [ -n "$PREV_CID" ]; then
-            PREV_IMAGE=$(docker inspect --format '{{.Image}}' "$PREV_CID")
-            PREV_SHA=$(image_revision "$PREV_IMAGE")
-            echo "Previous image: $PREV_IMAGE (revision ${PREV_SHA:-<unknown>})"
-          else
-            echo "No running '$SERVICE' — first deploy, nothing to roll back to."
-          fi
-
-          # --- deploy NEW ------------------------------------------------------
-          echo "::group::Deploying $NEW_REF"
-          deploy "$NEW_REF" "$NEW_SHA"
-          echo "::endgroup::"
-
-          if wait_healthy; then
-            echo "✅ Deployment of $NEW_REF succeeded and is healthy."
-            exit 0
-          fi
-          echo "❌ New version failed its health check."
-
-          # --- roll back to PREVIOUS (with ITS own compose files) -------------
-          if [ -z "$PREV_IMAGE" ]; then
-            echo "::error::No previous version to roll back to. Leaving failed stack for inspection."
-            docker compose logs --tail 100 "$SERVICE" || true
-            exit 1
-          fi
-
-          echo "::group::Rolling back to $PREV_IMAGE"
-          deploy "$PREV_IMAGE" "$PREV_SHA"
-          echo "::endgroup::"
-
-          if wait_healthy; then
-            echo "::error::Deploy failed; rolled back to previous version ($PREV_IMAGE)."
-            exit 1
-          else
-            echo "::error::Deploy failed AND rollback failed — environment may be down!"
-            docker compose logs --tail 100 "$SERVICE" || true
-            exit 1
-          fi
+        env:
+          IMAGE: ${{ vars.IMAGE_NAME || format('ghcr.io/{0}', github.repository) }}
+          TAG: ${{ inputs.image_tag }}
+          TRIGGER_SHA: ${{ github.sha }}
+          SERVICE: ${{ vars.COMPOSE_SERVICE }}
+          COMPOSE_PROJECT_NAME: ${{ vars.COMPOSE_STACK_NAME }}
+          COMPOSE_FILE: ${{ vars.COMPOSE_FILE }}
+          HOST_PORT: ${{ vars.HOST_PORT }}
+          ACTUATOR_PATH: ${{ vars.ACTUATOR_PATH }}
+          HEALTH_TIMEOUT: ${{ vars.HEALTH_TIMEOUT }}
+          HEALTH_INTERVAL: ${{ vars.HEALTH_INTERVAL }}
+        run: .github/scripts/deploy.sh
