@@ -33,6 +33,7 @@ SERVICE="${SERVICE:-app}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required (owner/repo)}"
 GH_TOKEN="${GH_TOKEN:-}"
 DEPLOYMENT_DIRECTORY="${DEPLOYMENT_DIRECTORY:-$HOME/deploys/$COMPOSE_STACK_NAME}"
+DEPLOYMENT_DIRECTORY="${DEPLOYMENT_DIRECTORY%/}"   # drop any trailing slash (avoids // in paths)
 KEEP_RELEASES="${KEEP_RELEASES}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL}"
@@ -52,17 +53,15 @@ service_container() {  # -> running container id for this project's SERVICE (or 
     --filter "label=com.docker.compose.service=${SERVICE}" | head -n1
 }
 
-# Download the compose file(s) at a revision into a new timestamped release
-# dir under DEPLOYMENT_DIRECTORY/releases. Sets RELEASE_DIR; echoes the local file list.
+# Download the compose file(s) at a revision into the current RELEASE_DIR
+# (created by deploy()). Echoes the colon-separated local file list.
+# NOTE: this is called inside $(...) so any variable it sets would be lost;
+# that's why RELEASE_DIR is created by the caller, not here.
 fetch_compose_files() {  # $1 = revision
-  local sha="$1"
-  local stamp; stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-  RELEASE_DIR="$RELEASES_DIR/${stamp}-${sha:0:12}"
-  mkdir -p "$RELEASE_DIR"
-  local list=""
+  local sha="$1" list="" out
   IFS=':' read -ra files <<< "$COMPOSE_FILE"
   for f in "${files[@]}"; do
-    local out="$RELEASE_DIR/$f"
+    out="$RELEASE_DIR/$f"
     mkdir -p "$(dirname "$out")"
     echo "Fetching $f @ $sha -> $out" >&2
     curl -fsSL \
@@ -77,6 +76,10 @@ fetch_compose_files() {  # $1 = revision
 }
 
 deploy() {  # $1 = image ref, $2 = revision for its compose files
+  # Create the release dir in THIS shell (not the subshell below) so
+  # RELEASE_DIR is visible to fetch_compose_files, deploy.meta, mark_current.
+  RELEASE_DIR="$RELEASES_DIR/$(date -u +%Y%m%dT%H%M%SZ)-${2:0:12}"
+  mkdir -p "$RELEASE_DIR"
   local files
   files="$(fetch_compose_files "$2")"
   printf 'image=%s\nrevision=%s\ntime=%s\n' "$1" "$2" "$(date -u +%FT%TZ)" > "$RELEASE_DIR/deploy.meta"
