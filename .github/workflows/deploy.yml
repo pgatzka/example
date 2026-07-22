@@ -1,5 +1,8 @@
 name: Deploy
 
+run-name: >
+  ${{ github.workflow }}: ${{ github.event_name }} for ${{ github.ref_name }} by @${{ github.actor }} on ${{ inputs.environment }}
+
 on:
   # Trigger 1: manual run from the Actions UI
   workflow_dispatch:
