@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 #
-# Deploy a container image from GHCR with docker compose, wait on the Spring
-# Boot Actuator health endpoint, and roll back to the previously running
-# version on failure.
+# Deploy a container image from GHCR with docker compose, wait on the
+# container's Docker HEALTHCHECK status, and roll back to the previously
+# running version on failure.
 #
-# Instead of checking out the whole repo, the compose file(s) are downloaded
-# at the exact commit the image was built from (OCI revision label). This
-# means the working tree is never touched, so this script is safe to run in
-# place.
+# Compose file(s) are downloaded at the exact commit the image was built from
+# (OCI revision label), so the working tree is never touched.
 #
 # Environment variables (defaults in brackets):
 #   IMAGE                 required, e.g. ghcr.io/owner/repo
@@ -18,10 +16,8 @@
 #   COMPOSE_FILE          required, colon-separated repo-relative paths
 #   GITHUB_REPOSITORY     required, owner/repo (auto-set in Actions)
 #   GH_TOKEN              token with contents:read (for private repos)
-#   HOST_PORT             [8080]
-#   ACTUATOR_PATH         [/actuator/health]
-#   HEALTH_TIMEOUT        seconds [120]
-#   HEALTH_INTERVAL       seconds [5]
+#   HEALTH_TIMEOUT        seconds to wait for "healthy" [120]
+#   HEALTH_INTERVAL       seconds between polls [5]
 set -euo pipefail
 
 IMAGE="${IMAGE:?IMAGE is required (e.g. ghcr.io/owner/repo)}"
@@ -32,18 +28,21 @@ SERVICE="${SERVICE:-app}"
 : "${COMPOSE_FILE:?COMPOSE_FILE is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required (owner/repo)}"
 GH_TOKEN="${GH_TOKEN:-}"
-HOST_PORT="${HOST_PORT}"
-ACTUATOR_PATH="${ACTUATOR_PATH}"
-HEALTH_TIMEOUT="${HEALTH_TIMEOUT}"
-HEALTH_INTERVAL="${HEALTH_INTERVAL}"
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:}"
+HEALTH_INTERVAL="${HEALTH_INTERVAL:}"
 
 # --- helpers ---------------------------------------------------------------
 image_revision() {  # $1 = image ref/id -> git sha it was built from (or "")
   docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$1" 2>/dev/null || true
 }
 
-# Download the compose file(s) at a revision into a temp dir; echoes a
-# colon-separated list of the local paths (to use as COMPOSE_FILE).
+service_container() {  # -> running container id for this project's SERVICE (or "")
+  docker ps -q \
+    --filter "label=com.docker.compose.project=${COMPOSE_STACK_NAME}" \
+    --filter "label=com.docker.compose.service=${SERVICE}" | head -n1
+}
+
+# Download the compose file(s) at a revision; echoes colon-separated local paths.
 fetch_compose_files() {  # $1 = revision
   local sha="$1"
   local destdir="${RUNNER_TEMP:-/tmp}/compose-${sha}"
@@ -71,16 +70,26 @@ deploy() {  # $1 = image ref, $2 = revision for its compose files
   APP_IMAGE="$1" COMPOSE_FILE="$files" docker compose up -d --remove-orphans
 }
 
+# Poll the container's Docker HEALTHCHECK status.
+#   returns 0 = healthy, 1 = unhealthy/timeout, 2 = no healthcheck defined
 wait_healthy() {
-  local url="http://localhost:${HOST_PORT}${ACTUATOR_PATH}"
   local deadline=$(( $(date +%s) + HEALTH_TIMEOUT ))
-  echo "Waiting for health at $url (timeout ${HEALTH_TIMEOUT}s)..."
+  local cid status
+  echo "Waiting for Docker health of '$SERVICE' (timeout ${HEALTH_TIMEOUT}s)..."
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    if curl -fsS "$url" >/dev/null 2>&1; then
-      echo "Actuator reports UP."; return 0
+    cid="$(service_container)"
+    if [ -n "$cid" ]; then
+      status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null || echo missing)"
+      case "$status" in
+        healthy)   echo "Container is healthy."; return 0 ;;
+        unhealthy) echo "Container reported unhealthy."; return 1 ;;
+        none)      echo "::error::Service '$SERVICE' has no HEALTHCHECK defined — cannot gate on Docker health."; return 2 ;;
+        *)         echo "  status: ${status:-<none>} ..." ;;   # starting / created
+      esac
     fi
     sleep "$HEALTH_INTERVAL"
   done
+  echo "Timed out waiting for 'healthy'."
   return 1
 }
 
@@ -98,9 +107,7 @@ fi
 echo "New image $NEW_REF was built from revision: ${NEW_SHA:-<unknown>}"
 
 # --- capture PREVIOUS version ---------------------------------------------
-PREV_CID=$(docker ps -q \
-  --filter "label=com.docker.compose.project=${COMPOSE_STACK_NAME}" \
-  --filter "label=com.docker.compose.service=${SERVICE}" | head -n1)
+PREV_CID="$(service_container)"
 PREV_IMAGE=""; PREV_SHA=""
 if [ -n "$PREV_CID" ]; then
   PREV_IMAGE=$(docker inspect --format '{{.Image}}' "$PREV_CID")
@@ -115,9 +122,14 @@ echo "::group::Deploying $NEW_REF"
 deploy "$NEW_REF" "$NEW_SHA"
 echo "::endgroup::"
 
-if wait_healthy; then
+rc=0; wait_healthy || rc=$?
+if [ "$rc" -eq 0 ]; then
   echo "✅ Deployment of $NEW_REF succeeded and is healthy."
   exit 0
+elif [ "$rc" -eq 2 ]; then
+  # Missing healthcheck is a config problem; rolling back wouldn't help.
+  echo "::error::Aborting without rollback. Define a HEALTHCHECK for '$SERVICE'."
+  exit 1
 fi
 echo "❌ New version failed its health check."
 
@@ -132,7 +144,8 @@ echo "::group::Rolling back to $PREV_IMAGE"
 deploy "$PREV_IMAGE" "$PREV_SHA"
 echo "::endgroup::"
 
-if wait_healthy; then
+rc=0; wait_healthy || rc=$?
+if [ "$rc" -eq 0 ]; then
   echo "::error::Deploy failed; rolled back to previous version ($PREV_IMAGE)."
   exit 1
 else
