@@ -14,7 +14,7 @@
 #   TAG                   [latest]
 #   TRIGGER_SHA           fallback revision if the image carries no label
 #   SERVICE               compose service to deploy/track [app]
-#   COMPOSE_PROJECT_NAME  required
+#   COMPOSE_STACK_NAME  required
 #   COMPOSE_FILE          required, colon-separated repo-relative paths
 #   GITHUB_REPOSITORY     required, owner/repo (auto-set in Actions)
 #   GH_TOKEN              token with contents:read (for private repos)
@@ -28,14 +28,14 @@ IMAGE="${IMAGE:?IMAGE is required (e.g. ghcr.io/owner/repo)}"
 TAG="${TAG:-latest}"
 TRIGGER_SHA="${TRIGGER_SHA:-}"
 SERVICE="${SERVICE:-app}"
-: "${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME is required}"; export COMPOSE_PROJECT_NAME
+: "${COMPOSE_STACK_NAME:?COMPOSE_STACK_NAME is required}"; export COMPOSE_STACK_NAME
 : "${COMPOSE_FILE:?COMPOSE_FILE is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required (owner/repo)}"
 GH_TOKEN="${GH_TOKEN:-}"
-HOST_PORT="${HOST_PORT:-8080}"
-ACTUATOR_PATH="${ACTUATOR_PATH:-/actuator/health}"
-HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
-HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
+HOST_PORT="${HOST_PORT}"
+ACTUATOR_PATH="${ACTUATOR_PATH}"
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT}"
+HEALTH_INTERVAL="${HEALTH_INTERVAL}"
 
 # --- helpers ---------------------------------------------------------------
 image_revision() {  # $1 = image ref/id -> git sha it was built from (or "")
@@ -99,7 +99,7 @@ echo "New image $NEW_REF was built from revision: ${NEW_SHA:-<unknown>}"
 
 # --- capture PREVIOUS version ---------------------------------------------
 PREV_CID=$(docker ps -q \
-  --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+  --filter "label=com.docker.compose.project=${COMPOSE_STACK_NAME}" \
   --filter "label=com.docker.compose.service=${SERVICE}" | head -n1)
 PREV_IMAGE=""; PREV_SHA=""
 if [ -n "$PREV_CID" ]; then
