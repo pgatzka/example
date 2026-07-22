@@ -54,7 +54,7 @@ jobs:
       TRIGGER_SHA: ${{ github.sha }}
 
       SERVICE: ${{ vars.COMPOSE_SERVICE }}
-      COMPOSE_PROJECT_NAME: ${{ vars.COMPOSE_STACK_NAME }}-${{ inputs.environment }}
+      COMPOSE_PROJECT_NAME: ${{ vars.COMPOSE_STACK_NAME }}
       COMPOSE_FILE: ${{ vars.COMPOSE_FILE }}
 
       HOST_PORT: ${{ vars.HOST_PORT }}
