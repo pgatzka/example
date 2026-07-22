@@ -28,8 +28,8 @@ SERVICE="${SERVICE:-app}"
 : "${COMPOSE_FILE:?COMPOSE_FILE is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required (owner/repo)}"
 GH_TOKEN="${GH_TOKEN:-}"
-HEALTH_TIMEOUT="${HEALTH_TIMEOUT:}"
-HEALTH_INTERVAL="${HEALTH_INTERVAL:}"
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT}"
+HEALTH_INTERVAL="${HEALTH_INTERVAL}"
 
 # --- helpers ---------------------------------------------------------------
 image_revision() {  # $1 = image ref/id -> git sha it was built from (or "")

@@ -69,7 +69,6 @@ jobs:
           COMPOSE_STACK_NAME: ${{ vars.COMPOSE_STACK_NAME }}
           COMPOSE_FILE: ${{ vars.COMPOSE_FILE }}
           HOST_PORT: ${{ vars.HOST_PORT }}
-          ACTUATOR_PATH: ${{ vars.ACTUATOR_PATH }}
           HEALTH_TIMEOUT: ${{ vars.HEALTH_TIMEOUT }}
           HEALTH_INTERVAL: ${{ vars.HEALTH_INTERVAL }}
         run: .github/scripts/deploy.sh
