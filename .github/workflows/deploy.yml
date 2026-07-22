@@ -73,3 +73,7 @@ jobs:
           HEALTH_TIMEOUT: ${{ vars.HEALTH_TIMEOUT }}
           HEALTH_INTERVAL: ${{ vars.HEALTH_INTERVAL }}
         run: .github/scripts/deploy.sh
+
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io
