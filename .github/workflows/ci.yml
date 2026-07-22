@@ -75,6 +75,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
   deploy-ci:
+    needs: build-and-push
     uses: ./.github/workflows/deploy.yml
     with:
       image_tag: latest
