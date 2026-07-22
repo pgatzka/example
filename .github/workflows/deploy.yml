@@ -51,16 +51,16 @@ jobs:
     env:
       IMAGE: ${{ vars.IMAGE_NAME || format('ghcr.io/{0}', github.repository) }}
       TAG: ${{ inputs.image_tag }}
-      TRIGGER_SHA: ${{ github.sha }}   # fallback if the image carries no revision label
+      TRIGGER_SHA: ${{ github.sha }}
 
-      SERVICE: ${{ vars.COMPOSE_SERVICE || 'app' }}
+      SERVICE: ${{ vars.COMPOSE_SERVICE }}
       COMPOSE_PROJECT_NAME: myapp-${{ inputs.environment }}
-      COMPOSE_FILE: ${{ vars.COMPOSE_FILE || format('docker-compose.yaml:docker-compose.{0}.yaml', inputs.environment) }}
+      COMPOSE_FILE: ${{ vars.COMPOSE_FILE }}
 
-      HOST_PORT: ${{ vars.HOST_PORT || '8080' }}
-      ACTUATOR_PATH: ${{ vars.ACTUATOR_PATH || '/actuator/health' }}
-      HEALTH_TIMEOUT: ${{ vars.HEALTH_TIMEOUT || '120' }}
-      HEALTH_INTERVAL: ${{ vars.HEALTH_INTERVAL || '5' }}
+      HOST_PORT: ${{ vars.HOST_PORT }}
+      ACTUATOR_PATH: ${{ vars.ACTUATOR_PATH }}
+      HEALTH_TIMEOUT: ${{ vars.HEALTH_TIMEOUT }}
+      HEALTH_INTERVAL: ${{ vars.HEALTH_INTERVAL }}
 
     steps:
       # Shallow checkout just to get a working git repo; we fetch the exact
