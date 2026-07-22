@@ -1,4 +1,4 @@
-name: example-ci
+name: ${COMPOSE_STACK_NAME}
 
 services:
   application:
