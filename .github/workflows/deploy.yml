@@ -55,7 +55,7 @@ jobs:
 
       SERVICE: ${{ vars.COMPOSE_SERVICE || 'app' }}
       COMPOSE_PROJECT_NAME: myapp-${{ inputs.environment }}
-      COMPOSE_FILE: ${{ vars.COMPOSE_FILE || format('compose.yaml:compose.{0}.yaml', inputs.environment) }}
+      COMPOSE_FILE: ${{ vars.COMPOSE_FILE || format('docker-compose.yaml:docker-compose.{0}.yaml', inputs.environment) }}
 
       HOST_PORT: ${{ vars.HOST_PORT || '8080' }}
       ACTUATOR_PATH: ${{ vars.ACTUATOR_PATH || '/actuator/health' }}
