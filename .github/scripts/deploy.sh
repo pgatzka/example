@@ -8,60 +8,59 @@
 # (OCI revision label) into a persistent per-environment directory, keeping a
 # timestamped history of releases with `current`/`previous` symlinks.
 #
-# Environment variables (defaults in brackets):
-#   IMAGE                 required, e.g. ghcr.io/owner/repo
-#   TAG                   [latest]
-#   TRIGGER_SHA           fallback revision if the image carries no label
-#   SERVICE               compose service to deploy/track [app]
-#   COMPOSE_STACK_NAME  required
-#   COMPOSE_FILE          required, colon-separated repo-relative paths
-#   GITHUB_REPOSITORY     required, owner/repo (auto-set in Actions)
-#   GH_TOKEN              token with contents:read (for private repos)
-#   DEPLOYMENT_DIRECTORY            where to store release history
-#                         [$HOME/deploys/$COMPOSE_STACK_NAME]
-#   KEEP_RELEASES         how many past releases to retain [10]
-#   HEALTH_TIMEOUT        seconds to wait for "healthy" [120]
-#   HEALTH_INTERVAL       seconds between polls [5]
+# Environment variables (defaults in brackets; others are required):
+#   IMAGE                  required, e.g. ghcr.io/owner/repo
+#   TAG                    [latest]
+#   TRIGGER_SHA            fallback revision if the image carries no label
+#   SERVICE                compose service to deploy/track [app]
+#   COMPOSE_PROJECT_NAME   required (docker compose project / stack name)
+#   COMPOSE_FILE           required, colon-separated repo-relative paths
+#   GITHUB_REPOSITORY      required, owner/repo (auto-set in Actions)
+#   GH_TOKEN               token with contents:read (for private repos)
+#   DEPLOYMENT_DIRECTORY   required, where release history is stored
+#   KEEP_RELEASES          required, how many past releases to retain
+#   HEALTH_TIMEOUT         required, seconds to wait for "healthy"
+#   HEALTH_INTERVAL        required, seconds between polls
 set -euo pipefail
 
 IMAGE="${IMAGE:?IMAGE is required (e.g. ghcr.io/owner/repo)}"
 TAG="${TAG:-latest}"
 TRIGGER_SHA="${TRIGGER_SHA:-}"
 SERVICE="${SERVICE:-app}"
-: "${COMPOSE_STACK_NAME:?COMPOSE_STACK_NAME is required}"; export COMPOSE_STACK_NAME
+: "${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME is required}"; export COMPOSE_PROJECT_NAME
 : "${COMPOSE_FILE:?COMPOSE_FILE is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required (owner/repo)}"
 GH_TOKEN="${GH_TOKEN:-}"
-DEPLOYMENT_DIRECTORY="${DEPLOYMENT_DIRECTORY:-$HOME/deploys/$COMPOSE_STACK_NAME}"
-DEPLOYMENT_DIRECTORY="${DEPLOYMENT_DIRECTORY%/}"   # drop any trailing slash (avoids // in paths)
-KEEP_RELEASES="${KEEP_RELEASES}"
-HEALTH_TIMEOUT="${HEALTH_TIMEOUT}"
-HEALTH_INTERVAL="${HEALTH_INTERVAL}"
+: "${DEPLOYMENT_DIRECTORY:?DEPLOYMENT_DIRECTORY is required}"
+DEPLOYMENT_DIRECTORY="${DEPLOYMENT_DIRECTORY%/}"    # drop trailing slash
+: "${KEEP_RELEASES:?KEEP_RELEASES is required}"
+: "${HEALTH_TIMEOUT:?HEALTH_TIMEOUT is required}"
+: "${HEALTH_INTERVAL:?HEALTH_INTERVAL is required}"
 
 RELEASES_DIR="$DEPLOYMENT_DIRECTORY/releases"
 mkdir -p "$RELEASES_DIR"
-RELEASE_DIR=""   # set by fetch_compose_files()
+RELEASE_DIRECTORY=""   # set by deploy()
 
 # --- helpers ---------------------------------------------------------------
 image_revision() {  # $1 = image ref/id -> git sha it was built from (or "")
   docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$1" 2>/dev/null || true
 }
 
-service_container() {  # -> running container id for this project's SERVICE (or "")
+service_container() {  # -> running container id for this stack's SERVICE (or "")
   docker ps -q \
-    --filter "label=com.docker.compose.project=${COMPOSE_STACK_NAME}" \
+    --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
     --filter "label=com.docker.compose.service=${SERVICE}" | head -n1
 }
 
-# Download the compose file(s) at a revision into the current RELEASE_DIR
+# Download the compose file(s) at a revision into the current RELEASE_DIRECTORY
 # (created by deploy()). Echoes the colon-separated local file list.
 # NOTE: this is called inside $(...) so any variable it sets would be lost;
-# that's why RELEASE_DIR is created by the caller, not here.
+# that's why RELEASE_DIRECTORY is created by the caller, not here.
 fetch_compose_files() {  # $1 = revision
   local sha="$1" list="" out
   IFS=':' read -ra files <<< "$COMPOSE_FILE"
   for f in "${files[@]}"; do
-    out="$RELEASE_DIR/$f"
+    out="$RELEASE_DIRECTORY/$f"
     mkdir -p "$(dirname "$out")"
     echo "Fetching $f @ $sha -> $out" >&2
     curl -fsSL \
@@ -77,12 +76,12 @@ fetch_compose_files() {  # $1 = revision
 
 deploy() {  # $1 = image ref, $2 = revision for its compose files
   # Create the release dir in THIS shell (not the subshell below) so
-  # RELEASE_DIR is visible to fetch_compose_files, deploy.meta, mark_current.
-  RELEASE_DIR="$RELEASES_DIR/$(date -u +%Y%m%dT%H%M%SZ)-${2:0:12}"
-  mkdir -p "$RELEASE_DIR"
+  # RELEASE_DIRECTORY is visible to fetch_compose_files, deploy.meta, mark_current.
+  RELEASE_DIRECTORY="$RELEASES_DIR/$(date -u +%Y%m%dT%H%M%SZ)-${2:0:12}"
+  mkdir -p "$RELEASE_DIRECTORY"
   local files
   files="$(fetch_compose_files "$2")"
-  printf 'image=%s\nrevision=%s\ntime=%s\n' "$1" "$2" "$(date -u +%FT%TZ)" > "$RELEASE_DIR/deploy.meta"
+  printf 'image=%s\nrevision=%s\ntime=%s\n' "$1" "$2" "$(date -u +%FT%TZ)" > "$RELEASE_DIRECTORY/deploy.meta"
   APP_IMAGE="$1" COMPOSE_FILE="$files" docker compose up -d --remove-orphans
 }
 
@@ -164,15 +163,15 @@ echo "::endgroup::"
 
 rc=0; wait_healthy || rc=$?
 if [ "$rc" -eq 0 ]; then
-  mark_current "$RELEASE_DIR"; prune_releases
+  mark_current "$RELEASE_DIRECTORY"; prune_releases
   echo "✅ Deployment of $NEW_REF succeeded and is healthy."
   exit 0
 elif [ "$rc" -eq 2 ]; then
   echo "::error::Aborting without rollback. Define a HEALTHCHECK for '$SERVICE'."
-  echo "Failed release kept at: $RELEASE_DIR"
+  echo "Failed release kept at: $RELEASE_DIRECTORY"
   exit 1
 fi
-echo "❌ New version failed its health check. Failed release kept at: $RELEASE_DIR"
+echo "❌ New version failed its health check. Failed release kept at: $RELEASE_DIRECTORY"
 
 # --- roll back to PREVIOUS -------------------------------------------------
 if [ -z "$PREV_IMAGE" ]; then
@@ -187,7 +186,7 @@ echo "::endgroup::"
 
 rc=0; wait_healthy || rc=$?
 if [ "$rc" -eq 0 ]; then
-  mark_current "$RELEASE_DIR"; prune_releases
+  mark_current "$RELEASE_DIRECTORY"; prune_releases
   echo "::error::Deploy failed; rolled back to previous version ($PREV_IMAGE)."
   exit 1
 else

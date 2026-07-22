@@ -60,20 +60,22 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Deploy the image together with its matching compose files
+      - name: Deploy
         env:
           IMAGE: ${{ vars.IMAGE_NAME || format('ghcr.io/{0}', github.repository) }}
           TAG: ${{ inputs.image_tag }}
           TRIGGER_SHA: ${{ github.sha }}
-          SERVICE: ${{ vars.COMPOSE_SERVICE }}
-          COMPOSE_STACK_NAME: ${{ vars.COMPOSE_STACK_NAME }}
-          COMPOSE_FILE: ${{ vars.COMPOSE_FILE }}
-          HOST_PORT: ${{ vars.HOST_PORT }}
+          SERVICE: ${{ vars.COMPOSE_SERVICE || 'app' }}
+          COMPOSE_PROJECT_NAME: ${{ vars.COMPOSE_PROJECT_NAME }}
+          COMPOSE_FILE: ${{ vars.COMPOSE_FILE || format('compose.yaml:compose.{0}.yaml', inputs.environment) }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # lets the script fetch compose files from a private repo
+          DEPLOYMENT_DIRECTORY: ${{ vars.DEPLOYMENT_DIRECTORY }}   # per-env history location (required)
+          KEEP_RELEASES: ${{ vars.KEEP_RELEASES }}
+          HOST_PORT: ${{ vars.HOST_PORT || '8080' }}   # available for ${HOST_PORT} interpolation in compose
           HEALTH_TIMEOUT: ${{ vars.HEALTH_TIMEOUT }}
           HEALTH_INTERVAL: ${{ vars.HEALTH_INTERVAL }}
-          DEPLOYMENT_DIRECTORY: ${{ vars.DEPLOYMENT_DIRECTORY }}
-          KEEP_RELEASES: ${{ vars.KEEP_RELEASES }}
         run: .github/scripts/deploy.sh
+
 
       - name: Log out of GHCR
         if: always()
