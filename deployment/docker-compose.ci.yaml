@@ -1,4 +1,4 @@
-name: ${COMPOSE_STACK_NAME}
+name: ${COMPOSE_PROJECT_NAME}
 
 services:
   application:
