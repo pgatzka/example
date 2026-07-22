@@ -1,0 +1,32 @@
+name: example
+
+services:
+  application:
+    image: example
+    ports:
+      - '8080:8080'
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/actuator/health || exit 1"]
+      interval: 1s
+      timeout: 1s
+      retries: 3
+      start_period: 1s
+    depends_on:
+      postgres:
+        condition: service_healthy
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: example
+      POSTGRES_PASSWORD: example
+      POSTGRES_DB: example
+    ports:
+      - '5432:5432'
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U example -d example"]
+      interval: 1s
+      timeout: 1s
+      retries: 5
+      start_period: 1s
+
+
