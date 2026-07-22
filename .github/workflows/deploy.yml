@@ -71,6 +71,8 @@ jobs:
           HOST_PORT: ${{ vars.HOST_PORT }}
           HEALTH_TIMEOUT: ${{ vars.HEALTH_TIMEOUT }}
           HEALTH_INTERVAL: ${{ vars.HEALTH_INTERVAL }}
+          DEPLOYMENT_DIRECTORY: ${{ vars.DEPLOYMENT_DIRECTORY }}
+          KEEP_RELEASES: ${{ vars.KEEP_RELEASES }}
         run: .github/scripts/deploy.sh
 
       - name: Log out of GHCR

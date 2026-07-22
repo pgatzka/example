@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
-# Deploy a container image from GHCR with docker compose, wait on the
-# container's Docker HEALTHCHECK status, and roll back to the previously
-# running version on failure.
+# Deploy a container image from GHCR with docker compose, gate on the
+# container's Docker HEALTHCHECK, and roll back to the previously running
+# version on failure.
 #
 # Compose file(s) are downloaded at the exact commit the image was built from
-# (OCI revision label), so the working tree is never touched.
+# (OCI revision label) into a persistent per-environment directory, keeping a
+# timestamped history of releases with `current`/`previous` symlinks.
 #
 # Environment variables (defaults in brackets):
 #   IMAGE                 required, e.g. ghcr.io/owner/repo
@@ -16,6 +17,9 @@
 #   COMPOSE_FILE          required, colon-separated repo-relative paths
 #   GITHUB_REPOSITORY     required, owner/repo (auto-set in Actions)
 #   GH_TOKEN              token with contents:read (for private repos)
+#   DEPLOYMENT_DIRECTORY            where to store release history
+#                         [$HOME/deploys/$COMPOSE_STACK_NAME]
+#   KEEP_RELEASES         how many past releases to retain [10]
 #   HEALTH_TIMEOUT        seconds to wait for "healthy" [120]
 #   HEALTH_INTERVAL       seconds between polls [5]
 set -euo pipefail
@@ -28,8 +32,14 @@ SERVICE="${SERVICE:-app}"
 : "${COMPOSE_FILE:?COMPOSE_FILE is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required (owner/repo)}"
 GH_TOKEN="${GH_TOKEN:-}"
+DEPLOYMENT_DIRECTORY="${DEPLOYMENT_DIRECTORY:-$HOME/deploys/$COMPOSE_STACK_NAME}"
+KEEP_RELEASES="${KEEP_RELEASES}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL}"
+
+RELEASES_DIR="$DEPLOYMENT_DIRECTORY/releases"
+mkdir -p "$RELEASES_DIR"
+RELEASE_DIR=""   # set by fetch_compose_files()
 
 # --- helpers ---------------------------------------------------------------
 image_revision() {  # $1 = image ref/id -> git sha it was built from (or "")
@@ -42,17 +52,19 @@ service_container() {  # -> running container id for this project's SERVICE (or 
     --filter "label=com.docker.compose.service=${SERVICE}" | head -n1
 }
 
-# Download the compose file(s) at a revision; echoes colon-separated local paths.
+# Download the compose file(s) at a revision into a new timestamped release
+# dir under DEPLOYMENT_DIRECTORY/releases. Sets RELEASE_DIR; echoes the local file list.
 fetch_compose_files() {  # $1 = revision
   local sha="$1"
-  local destdir="${RUNNER_TEMP:-/tmp}/compose-${sha}"
-  rm -rf "$destdir"; mkdir -p "$destdir"
+  local stamp; stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  RELEASE_DIR="$RELEASES_DIR/${stamp}-${sha:0:12}"
+  mkdir -p "$RELEASE_DIR"
   local list=""
   IFS=':' read -ra files <<< "$COMPOSE_FILE"
   for f in "${files[@]}"; do
-    local out="$destdir/$f"
+    local out="$RELEASE_DIR/$f"
     mkdir -p "$(dirname "$out")"
-    echo "Fetching $f @ $sha" >&2
+    echo "Fetching $f @ $sha -> $out" >&2
     curl -fsSL \
       ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} \
       -H "Accept: application/vnd.github.raw+json" \
@@ -67,14 +79,38 @@ fetch_compose_files() {  # $1 = revision
 deploy() {  # $1 = image ref, $2 = revision for its compose files
   local files
   files="$(fetch_compose_files "$2")"
+  printf 'image=%s\nrevision=%s\ntime=%s\n' "$1" "$2" "$(date -u +%FT%TZ)" > "$RELEASE_DIR/deploy.meta"
   APP_IMAGE="$1" COMPOSE_FILE="$files" docker compose up -d --remove-orphans
 }
 
+# Point `current` at the given release (rotating the old current to `previous`).
+mark_current() {  # $1 = release dir now live
+  local cur="$DEPLOYMENT_DIRECTORY/current"
+  if [ -L "$cur" ]; then
+    ln -sfn "$(readlink "$cur")" "$DEPLOYMENT_DIRECTORY/previous"
+  fi
+  ln -sfn "$1" "$cur"
+  echo "current -> $1"
+}
+
+prune_releases() {
+  local keep="$KEEP_RELEASES" cur prev i=0 d
+  cur="$(readlink -f "$DEPLOYMENT_DIRECTORY/current"  2>/dev/null || true)"
+  prev="$(readlink -f "$DEPLOYMENT_DIRECTORY/previous" 2>/dev/null || true)"
+  while IFS= read -r d; do
+    d="${d%/}"; i=$((i+1))
+    [ "$i" -le "$keep" ] && continue
+    [ "$d" = "$cur" ]  && continue
+    [ "$d" = "$prev" ] && continue
+    echo "Pruning old release $d"
+    rm -rf "$d"
+  done < <(ls -1dt "$RELEASES_DIR"/*/ 2>/dev/null || true)
+}
+
 # Poll the container's Docker HEALTHCHECK status.
-#   returns 0 = healthy, 1 = unhealthy/timeout, 2 = no healthcheck defined
+#   0 = healthy, 1 = unhealthy/timeout, 2 = no healthcheck defined
 wait_healthy() {
-  local deadline=$(( $(date +%s) + HEALTH_TIMEOUT ))
-  local cid status
+  local deadline=$(( $(date +%s) + HEALTH_TIMEOUT )) cid status
   echo "Waiting for Docker health of '$SERVICE' (timeout ${HEALTH_TIMEOUT}s)..."
   while [ "$(date +%s)" -lt "$deadline" ]; do
     cid="$(service_container)"
@@ -84,7 +120,7 @@ wait_healthy() {
         healthy)   echo "Container is healthy."; return 0 ;;
         unhealthy) echo "Container reported unhealthy."; return 1 ;;
         none)      echo "::error::Service '$SERVICE' has no HEALTHCHECK defined — cannot gate on Docker health."; return 2 ;;
-        *)         echo "  status: ${status:-<none>} ..." ;;   # starting / created
+        *)         echo "  status: ${status:-<none>} ..." ;;
       esac
     fi
     sleep "$HEALTH_INTERVAL"
@@ -105,6 +141,7 @@ if [ -z "$NEW_SHA" ]; then
   esac
 fi
 echo "New image $NEW_REF was built from revision: ${NEW_SHA:-<unknown>}"
+echo "Release history: $RELEASES_DIR"
 
 # --- capture PREVIOUS version ---------------------------------------------
 PREV_CID="$(service_container)"
@@ -124,14 +161,15 @@ echo "::endgroup::"
 
 rc=0; wait_healthy || rc=$?
 if [ "$rc" -eq 0 ]; then
+  mark_current "$RELEASE_DIR"; prune_releases
   echo "✅ Deployment of $NEW_REF succeeded and is healthy."
   exit 0
 elif [ "$rc" -eq 2 ]; then
-  # Missing healthcheck is a config problem; rolling back wouldn't help.
   echo "::error::Aborting without rollback. Define a HEALTHCHECK for '$SERVICE'."
+  echo "Failed release kept at: $RELEASE_DIR"
   exit 1
 fi
-echo "❌ New version failed its health check."
+echo "❌ New version failed its health check. Failed release kept at: $RELEASE_DIR"
 
 # --- roll back to PREVIOUS -------------------------------------------------
 if [ -z "$PREV_IMAGE" ]; then
@@ -146,6 +184,7 @@ echo "::endgroup::"
 
 rc=0; wait_healthy || rc=$?
 if [ "$rc" -eq 0 ]; then
+  mark_current "$RELEASE_DIR"; prune_releases
   echo "::error::Deploy failed; rolled back to previous version ($PREV_IMAGE)."
   exit 1
 else
